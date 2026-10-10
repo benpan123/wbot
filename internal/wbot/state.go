@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"syscall"
 )
@@ -69,6 +70,9 @@ func (j *Journal) Update(fn func(*Snapshot)) error {
 	defer j.mu.Unlock()
 	next := cloneSnapshot(j.data)
 	fn(&next)
+	if reflect.DeepEqual(j.data, next) {
+		return nil
+	}
 	if err := writeJSON(j.path, next); err != nil {
 		return err
 	}
@@ -89,4 +93,11 @@ func AcquireProfile(dir string) (func(), error) {
 		return nil, errors.New("这个配置已经有正在运行的 wbot，请先停止该进程")
 	}
 	return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
+}
+
+// Summary avoids serializing the delivery history for routine health checks.
+func (j *Journal) Summary() (loggedIn bool, bot, owner string, pending int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.data.Credentials.Token != "", j.data.Credentials.Bot, j.data.Credentials.Owner, len(j.data.Pending)
 }

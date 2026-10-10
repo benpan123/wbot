@@ -40,7 +40,7 @@ wbot 向配置的 Webhook 地址发送 POST 请求，`Content-Type` 为 `applica
 ```text
 Idempotency-Key: <事件 id>
 X-Wbot-Event: message
-User-Agent: wbot/0.1.0
+User-Agent: wbot/0.2.0
 ```
 
 配置 `webhook.token` 后，额外包含 `Authorization: Bearer <token>`。
@@ -116,18 +116,48 @@ Authorization: Bearer <配置中的 local_token>
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "running": true,
   "logged_in": true,
   "bot_id": "机器人ID",
   "owner_id": "扫码用户ID",
   "pending_messages": 0,
-  "last_issue": ""
+  "last_issue": "",
+  "activity": {
+    "started_at": "2026-10-10T12:00:00Z",
+    "last_receive_at": "2026-10-10T12:01:00Z",
+    "last_delivery_at": "2026-10-10T12:00:15Z",
+    "last_progress_at": "2026-10-10T12:01:00Z",
+    "empty_polls": 3,
+    "received_events": 1,
+    "delivery_attempts": 1,
+    "delivered_events": 1
+  }
 }
 ```
 
 命令行 `wbot status` 在服务未运行时会读取本地状态，并返回 `running: false`。`logged_in` 仅表示本地保存了登录凭证；实际过期状态由腾讯接口返回。
 
+`activity` 记录本次进程的活动，重启后计数归零。尚未发生的活动时间使用 Go 的零时间 `0001-01-01T00:00:00Z`。离线状态的活动计数不代表上一次进程的数据。`delivery_attempts` 包含重试，`delivered_events` 表示接收端返回成功；这些计数不等同于模型调用次数或 token 数量。
+
+### GET /v1/health
+
+沿用本地 token 身份验证。正常时返回 HTTP 200：
+
+```json
+{"healthy": true, "issues": [], "activity": {"...": "与 status 相同"}}
+```
+
+异常时返回 HTTP 503，`healthy` 为 `false`，`issues` 列出原因，`error` 提供简要描述。首次消息检查尚未完成、凭证缺失、最近接收或交付失败、处理流程超过五分钟未更新时，均报告异常。
+
+该接口只检查接收进程已有的内存状态，不向腾讯或 Agent 发送请求，不执行消息脚本，也不修改状态文件。命令行 `wbot health` 提供相同检查，成功退出码为 0，异常或进程不可达时为非零。健康检查不验证 Agent 内部任务、模型结果或实际微信送达。
+
+## 本地消息脚本
+
+配置 `on_message` 参数数组并清空 `webhook.url` 后，wbot 通过标准输入交付相同的事件 JSON。环境变量 `WBOT_EVENT_ID` 提供稳定事件 ID，`WBOT_STATE_DIR` 提供状态目录。可执行文件需要使用绝对路径。
+
+退出码 0 表示已可靠接收消息，非零或超过十五秒则保留消息并重试。脚本只负责去重和可靠入队，模型处理留给后台 worker。原始用户内容不会插入命令参数；脚本也必须避免将消息解释为命令。详细配置见 [Muse 接入说明](MUSE.md)。
+
 ## 接口依据
 
-协议字段和请求方式依据[腾讯维护的接口文档](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol_zh_CN.md)。本实现使用自己的版本号及 `bot_agent: wbot/0.1.0`，通过 iLink 公开的消息和媒体接口进行通信。
+协议字段和请求方式依据[腾讯维护的接口文档](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol_zh_CN.md)。本实现使用自己的版本号及 `bot_agent: wbot/0.2.0`，通过 iLink 公开的消息和媒体接口进行通信。

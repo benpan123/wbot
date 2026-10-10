@@ -16,6 +16,7 @@ import time
 
 
 def run(binary):
+    version = subprocess.check_output([str(binary), 'version'], text=True, timeout=5).strip().split()[1]
     failures = []
     complete = threading.Event()
     replies = []
@@ -30,7 +31,7 @@ def run(binary):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             if self.headers.get('Authorization') != 'Bearer mock-bot-token':
                 failures.append('Missing WeChat authentication')
-            if body.get('base_info', {}).get('bot_agent') != 'wbot/0.1.0':
+            if body.get('base_info', {}).get('bot_agent') != 'wbot/' + version:
                 failures.append('Missing wbot application identity')
             result = {'ret': 0}
             if self.path.endswith('/getupdates'):
@@ -127,8 +128,15 @@ def run(binary):
                     raise AssertionError('Delivery acknowledgement was not persisted')
                 status = subprocess.run([str(binary), '--config', str(config_path), 'status'],
                                         capture_output=True, text=True, check=True, timeout=5)
-                if json.loads(status.stdout)['pending_messages'] != 0:
+                observed = json.loads(status.stdout)
+                if observed['pending_messages'] != 0:
                     failures.append('Queue did not drain')
+                if observed['activity']['delivery_attempts'] != 1:
+                    failures.append('Unexpected Agent delivery attempts')
+                health = subprocess.run([str(binary), '--config', str(config_path), 'health'],
+                                        capture_output=True, text=True, check=True, timeout=5)
+                if not json.loads(health.stdout)['healthy']:
+                    failures.append('Health check failed')
                 if replies != ['收到：你好，wbot']:
                     failures.append('Wrong or duplicate reply: ' + repr(replies))
                 process.send_signal(signal.SIGTERM)
@@ -138,7 +146,8 @@ def run(binary):
                 if failures:
                     raise AssertionError('\n'.join(failures))
                 print(json.dumps({'result': 'passed', 'webhook_events': 1, 'wechat_replies': len(replies),
-                                  'pending_messages': 0, 'graceful_shutdown': True}, indent=2))
+                                  'pending_messages': 0, 'health_check': True,
+                                  'graceful_shutdown': True}, indent=2))
             finally:
                 if process.poll() is None:
                     process.kill()

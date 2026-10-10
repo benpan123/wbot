@@ -69,7 +69,7 @@ func (c *Client) call(ctx context.Context, method, operation string, body map[st
 		return errors.New("无法创建微信接口请求")
 	}
 	request.Header.Set("iLink-App-Id", "bot")
-	request.Header.Set("iLink-App-ClientVersion", "256")
+	request.Header.Set("iLink-App-ClientVersion", "512")
 	if method == http.MethodPost {
 		var nonce [4]byte
 		if _, err := rand.Read(nonce[:]); err != nil {

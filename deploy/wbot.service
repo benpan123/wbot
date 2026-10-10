@@ -1,0 +1,17 @@
+[Unit]
+Description=wbot WeChat message bridge
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart="%h/.local/bin/wbot" --config "%h/.config/wbot/config.json" run
+WorkingDirectory=%h
+EnvironmentFile=-%h/.config/wbot/service.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=default.target

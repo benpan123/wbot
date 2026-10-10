@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const Version = "0.1.0"
+const Version = "0.2.0"
 const Gateway = "https://ilinkai.weixin.qq.com"
 
 // Settings belong to one WeChat login. Independent profiles use separate files.
@@ -24,6 +24,7 @@ type Settings struct {
 	StateDir   string       `json:"state_dir"`
 	AllowUsers []string     `json:"allow_users"`
 	Webhook    HookSettings `json:"webhook"`
+	OnMessage  []string     `json:"on_message,omitempty"`
 }
 
 type HookSettings struct {

@@ -14,6 +14,14 @@ import (
 
 func (r *Relay) Handler() http.Handler {
 	routes := http.NewServeMux()
+	routes.HandleFunc("GET /v1/health", func(w http.ResponseWriter, q *http.Request) {
+		health := r.Health()
+		code := http.StatusOK
+		if !health.Healthy {
+			code = http.StatusServiceUnavailable
+		}
+		respond(w, code, health)
+	})
 	routes.HandleFunc("GET /v1/status", func(w http.ResponseWriter, q *http.Request) { respond(w, 200, r.Status()) })
 	routes.HandleFunc("POST /v1/send", func(w http.ResponseWriter, q *http.Request) {
 		if !strings.HasPrefix(q.Header.Get("Content-Type"), "application/json") {

@@ -44,10 +44,11 @@ type Relay struct {
 	sendLock   sync.Mutex
 	statusLock sync.RWMutex
 	lastIssue  string
+	activity   Activity
 }
 
 func NewRelay(c Settings, j *Journal) *Relay {
-	return &Relay{Config: c, Journal: j, WeChat: NewClient(j.Read().Credentials), HookHTTP: httpClient(15 * time.Second), Log: slog.Default()}
+	return &Relay{Config: c, Journal: j, WeChat: NewClient(j.Read().Credentials), HookHTTP: httpClient(15 * time.Second), Log: slog.Default(), activity: Activity{StartedAt: time.Now().UTC()}}
 }
 
 func (r *Relay) allowed(id string) bool {
@@ -55,7 +56,8 @@ func (r *Relay) allowed(id string) bool {
 		return false
 	}
 	if len(r.Config.AllowUsers) == 0 {
-		return id == r.Journal.Read().Credentials.Owner
+		_, _, owner, _ := r.Journal.Summary()
+		return id == owner
 	}
 	return slices.Contains(r.Config.AllowUsers, id)
 }
@@ -79,6 +81,9 @@ func incomingID(message Incoming, bot string) (string, string) {
 // happens later, so terminating a process cannot silently discard a received batch.
 func (r *Relay) Ingest(ctx context.Context, batch Updates) error {
 	snapshot := r.Journal.Read()
+	if len(batch.Messages) == 0 && (batch.Cursor == "" || batch.Cursor == snapshot.Cursor) {
+		return nil
+	}
 	known := map[string]bool{}
 	for _, id := range snapshot.Delivered {
 		known[id] = true
@@ -111,6 +116,7 @@ func (r *Relay) Ingest(ctx context.Context, batch Updates) error {
 			}
 			kind, source := attachmentSource(item)
 			if kind != "" && source != nil {
+				r.progress()
 				event.Attachments = append(event.Attachments, r.WeChat.SaveAttachment(ctx, filepath.Join(r.Config.StateDir, "media"), id, index, item))
 			}
 		}
@@ -128,7 +134,7 @@ func (r *Relay) Ingest(ctx context.Context, batch Updates) error {
 		}
 		events = append(events, event)
 	}
-	return r.Journal.Update(func(s *Snapshot) {
+	err := r.Journal.Update(func(s *Snapshot) {
 		for user, token := range contacts {
 			s.ReplyTokens[user] = token
 		}
@@ -137,6 +143,12 @@ func (r *Relay) Ingest(ctx context.Context, batch Updates) error {
 			s.Cursor = batch.Cursor
 		}
 	})
+	if err == nil {
+		r.statusLock.Lock()
+		r.activity.ReceivedEvents += uint64(len(events))
+		r.statusLock.Unlock()
+	}
+	return err
 }
 
 func Signature(key, timestamp string, body []byte) string {
@@ -148,6 +160,12 @@ func Signature(key, timestamp string, body []byte) string {
 }
 
 func (r *Relay) deliver(ctx context.Context, event Event) error {
+	r.statusLock.Lock()
+	r.activity.DeliveryAttempts++
+	r.statusLock.Unlock()
+	if len(r.Config.OnMessage) > 0 {
+		return r.runHook(ctx, event)
+	}
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -193,6 +211,10 @@ func (r *Relay) DeliverOne(ctx context.Context) (bool, error) {
 		if err := r.deliver(ctx, event); err != nil {
 			return true, err
 		}
+		r.statusLock.Lock()
+		r.activity.DeliveredEvents++
+		r.activity.LastDeliveryAt = time.Now().UTC()
+		r.statusLock.Unlock()
 	}
 	err := r.Journal.Update(func(s *Snapshot) {
 		s.Pending = s.Pending[1:]
@@ -218,7 +240,7 @@ func (r *Relay) Run(ctx context.Context) error {
 	if r.WeChat.Token == "" {
 		return errors.New("请先执行 wbot login 完成微信登录")
 	}
-	if err := ValidateWebhook(r.Config.Webhook.URL); err != nil {
+	if err := r.Config.ValidateDelivery(); err != nil {
 		return err
 	}
 	if err := r.WeChat.Notify(ctx, true); err != nil {
@@ -228,6 +250,7 @@ func (r *Relay) Run(ctx context.Context) error {
 	backoff := time.Second
 	pollTimeout := 40 * time.Second
 	for ctx.Err() == nil {
+		r.progress()
 		delivered, err := r.DeliverOne(ctx)
 		if err == nil && delivered {
 			backoff = time.Second
@@ -238,6 +261,12 @@ func (r *Relay) Run(ctx context.Context) error {
 			var batch Updates
 			batch, err = r.WeChat.Receive(ctx, r.Journal.Read().Cursor, pollTimeout)
 			if err == nil {
+				r.statusLock.Lock()
+				r.activity.LastReceiveAt = time.Now().UTC()
+				if len(batch.Messages) == 0 {
+					r.activity.EmptyPolls++
+				}
+				r.statusLock.Unlock()
 				if batch.TimeoutMS > 0 {
 					pollTimeout = time.Duration(batch.TimeoutMS)*time.Millisecond + 5*time.Second
 					if pollTimeout > 40*time.Second {
@@ -359,9 +388,9 @@ func textChunks(text string, limit int) []string {
 }
 
 func (r *Relay) Status() map[string]any {
-	s := r.Journal.Read()
+	loggedIn, bot, owner, pending := r.Journal.Summary()
 	r.statusLock.RLock()
-	issue := r.lastIssue
+	issue, activity := r.lastIssue, r.activity
 	r.statusLock.RUnlock()
-	return map[string]any{"version": Version, "running": true, "logged_in": s.Credentials.Token != "", "bot_id": s.Credentials.Bot, "owner_id": s.Credentials.Owner, "pending_messages": len(s.Pending), "last_issue": issue}
+	return map[string]any{"version": Version, "running": true, "logged_in": loggedIn, "bot_id": bot, "owner_id": owner, "pending_messages": pending, "last_issue": issue, "activity": activity}
 }

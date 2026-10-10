@@ -29,7 +29,8 @@ const help = `wbot — 通过微信联系你的智能助手
   run                         启动消息接收和本地回复接口
   send    [--to 用户ID] --text 内容
           [--image 图片 | --file 文件 | --video 视频]
-  status                      查看运行状态
+  status                      查看运行状态和交付计数
+  health                      本机健康检查，不调用 Agent
   version                     查看版本
 
 文字和附件可以一起发送。省略 --to 时回复扫码登录的用户。
@@ -172,6 +173,18 @@ func CLI(ctx context.Context, args []string, input io.Reader, output, diagnostic
 			return errors.New("run 不接受额外参数")
 		}
 		return runProfile(ctx, c, output)
+	case "health":
+		if len(args) != 1 {
+			return errors.New("health 不接受额外参数")
+		}
+		check, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		result, err := localCall(check, c, http.MethodGet, "/v1/health", nil)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(output, string(result))
+		return nil
 	case "status":
 		if len(args) != 1 {
 			return errors.New("status 不接受额外参数")
@@ -234,7 +247,7 @@ func CLI(ctx context.Context, args []string, input io.Reader, output, diagnostic
 }
 
 func runProfile(ctx context.Context, c Settings, output io.Writer) error {
-	if err := ValidateWebhook(c.Webhook.URL); err != nil {
+	if err := c.ValidateDelivery(); err != nil {
 		return err
 	}
 	release, err := AcquireProfile(c.StateDir)

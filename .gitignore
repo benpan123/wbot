@@ -1,0 +1,7 @@
+/wbot
+/dist/
+/.local/
+*.log
+.env
+config.json
+session.json

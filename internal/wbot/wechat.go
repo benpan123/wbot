@@ -19,6 +19,19 @@ import (
 
 var ErrLoginExpired = errors.New("微信登录已过期，请重新执行 wbot login")
 
+// HTTPError excludes query strings and response bodies, which may contain
+// QR sessions, verification codes, or credentials.
+type HTTPError struct {
+	Method     string
+	Host       string
+	Operation  string
+	StatusCode int
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("微信接口 %s %s/ilink/bot/%s 返回 HTTP %d", e.Method, e.Host, e.Operation, e.StatusCode)
+}
+
 type APIError struct {
 	Code      int
 	Operation string
@@ -69,7 +82,7 @@ func (c *Client) call(ctx context.Context, method, operation string, body map[st
 		return errors.New("无法创建微信接口请求")
 	}
 	request.Header.Set("iLink-App-Id", "bot")
-	request.Header.Set("iLink-App-ClientVersion", "512")
+	request.Header.Set("iLink-App-ClientVersion", "513")
 	if method == http.MethodPost {
 		var nonce [4]byte
 		if _, err := rand.Read(nonce[:]); err != nil {
@@ -91,7 +104,7 @@ func (c *Client) call(ctx context.Context, method, operation string, body map[st
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("微信接口 HTTP 状态码 %d", response.StatusCode)
+		return &HTTPError{Method: method, Host: request.URL.Host, Operation: strings.Split(operation, "?")[0], StatusCode: response.StatusCode}
 	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
 	if err != nil {
@@ -143,6 +156,16 @@ func (c *Client) QR(ctx context.Context, previousToken string) (QRCode, error) {
 		tokens = append(tokens, previousToken)
 	}
 	err := c.call(ctx, http.MethodPost, "get_bot_qrcode?bot_type=3", map[string]any{"local_token_list": tokens}, &q, false)
+	var status *HTTPError
+	if errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
+		// Some deployments accept the older GET QR endpoint. Retry only this
+		// unauthenticated operation after an explicit method rejection. Never
+		// place previous bot tokens in a GET query or forward POST metadata.
+		err = c.call(ctx, http.MethodGet, "get_bot_qrcode?bot_type=3", nil, &q, false)
+		if err != nil {
+			return q, fmt.Errorf("二维码 POST 请求返回 HTTP 405；GET 兼容请求失败：%w", err)
+		}
+	}
 	if err == nil && (q.ID == "" || q.Content == "") {
 		err = errors.New("微信接口没有返回完整的登录二维码")
 	}

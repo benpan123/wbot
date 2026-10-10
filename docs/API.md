@@ -40,7 +40,7 @@ wbot 向配置的 Webhook 地址发送 POST 请求，`Content-Type` 为 `applica
 ```text
 Idempotency-Key: <事件 id>
 X-Wbot-Event: message
-User-Agent: wbot/0.2.0
+User-Agent: wbot/0.2.1
 ```
 
 配置 `webhook.token` 后，额外包含 `Authorization: Bearer <token>`。
@@ -116,7 +116,7 @@ Authorization: Bearer <配置中的 local_token>
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "running": true,
   "logged_in": true,
   "bot_id": "机器人ID",
@@ -160,4 +160,4 @@ Authorization: Bearer <配置中的 local_token>
 
 ## 接口依据
 
-协议字段和请求方式依据[腾讯维护的接口文档](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol_zh_CN.md)。本实现使用自己的版本号及 `bot_agent: wbot/0.2.0`，通过 iLink 公开的消息和媒体接口进行通信。
+协议字段和请求方式依据[腾讯维护的接口文档](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol_zh_CN.md)。本实现使用自己的版本号及 `bot_agent: wbot/0.2.1`，通过 iLink 公开的消息和媒体接口进行通信。

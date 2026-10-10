@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const Version = "0.2.0"
+const Version = "0.2.1"
 const Gateway = "https://ilinkai.weixin.qq.com"
 
 // Settings belong to one WeChat login. Independent profiles use separate files.

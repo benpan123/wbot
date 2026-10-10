@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,98 @@ func TestExpiredQRRefreshLimit(t *testing.T) {
 	_, err := Authenticate(context.Background(), NewClient(Credentials{Endpoint: fake.URL}), "", func(QRCode) error { return nil }, nil)
 	if err == nil || count.Load() != 3 {
 		t.Fatalf("QR retry was unbounded: %d %v", count.Load(), err)
+	}
+}
+
+func TestQRMethodCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		status      int
+		body        string
+		wantCalls   int32
+		wantSuccess bool
+	}{
+		{"post_success", 200, `{"qrcode":"post-qr","qrcode_img_content":"post-content"}`, 1, true},
+		{"method_rejected", 405, `method not allowed`, 2, true},
+		{"forbidden", 403, `forbidden`, 1, false},
+		{"rate_limited", 429, `rate limited`, 1, false},
+		{"server_error", 503, `unavailable`, 1, false},
+		{"business_error", 200, `{"ret":123}`, 1, false},
+		{"incomplete_qr", 200, `{"qrcode":"partial"}`, 1, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+				attempt := calls.Add(1)
+				if q.URL.Path != "/ilink/bot/get_bot_qrcode" || q.URL.RawQuery != "bot_type=3" || q.Header.Get("Authorization") != "" {
+					t.Error("QR request leaked credentials or changed endpoint")
+				}
+				if attempt == 1 {
+					var body struct {
+						Tokens []string `json:"local_token_list"`
+					}
+					if q.Method != http.MethodPost || json.NewDecoder(q.Body).Decode(&body) != nil || len(body.Tokens) != 1 || body.Tokens[0] != "previous-private-token" {
+						t.Error("initial QR request did not use documented POST format")
+					}
+					w.WriteHeader(test.status)
+					io.WriteString(w, test.body)
+					return
+				}
+				body, _ := io.ReadAll(q.Body)
+				if attempt != 2 || q.Method != http.MethodGet || len(body) != 0 {
+					t.Error("compatibility request must be one bodyless GET")
+				}
+				for _, header := range []string{"AuthorizationType", "X-WECHAT-UIN", "Content-Type"} {
+					if q.Header.Get(header) != "" {
+						t.Errorf("GET included POST metadata %s", header)
+					}
+				}
+				if q.Header.Get("iLink-App-Id") != "bot" || q.Header.Get("iLink-App-ClientVersion") != "513" {
+					t.Error("GET application metadata missing")
+				}
+				io.WriteString(w, `{"qrcode":"get-qr","qrcode_img_content":"get-content"}`)
+			}))
+			defer fake.Close()
+			client := NewClient(Credentials{Endpoint: fake.URL, Token: "must-not-authorize"})
+			qr, err := client.QR(context.Background(), "previous-private-token")
+			if (err == nil) != test.wantSuccess || calls.Load() != test.wantCalls {
+				t.Fatalf("unexpected QR result: calls=%d err=%v", calls.Load(), err)
+			}
+			if test.status == 405 && (qr.ID != "get-qr" || qr.Content != "get-content") {
+				t.Fatal("GET response was not used")
+			}
+		})
+	}
+}
+
+func TestQRCompatibilityFailureAndRedactedHTTPError(t *testing.T) {
+	var calls atomic.Int32
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(405)
+		io.WriteString(w, "secret-response-body")
+	}))
+	defer fake.Close()
+	client := NewClient(Credentials{Endpoint: fake.URL})
+	_, err := client.QR(context.Background(), "secret-token")
+	var status *HTTPError
+	if !errors.As(err, &status) || status.Method != "GET" || status.StatusCode != 405 || calls.Load() != 2 {
+		t.Fatalf("unexpected compatibility failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST") || !strings.Contains(err.Error(), "GET") || !strings.Contains(err.Error(), "get_bot_qrcode") {
+		t.Fatal("error omitted method or endpoint information")
+	}
+	_, err = client.LoginStatus(context.Background(), "secret-qr-session", "secret-verification-code")
+	if !errors.As(err, &status) || status.Operation != "get_qrcode_status" || calls.Load() != 3 {
+		t.Fatal("QR status request was retried or error context was lost")
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "?") {
+		t.Fatal("HTTP error leaked query or response contents")
+	}
+	client.Token = "private-bot-token"
+	_, err = client.SendItems(context.Background(), "owner", "context", nil)
+	if !errors.As(err, &status) || status.Method != "POST" || calls.Load() != 4 {
+		t.Fatal("message sending incorrectly retried using GET")
 	}
 }
 
